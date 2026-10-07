@@ -33,12 +33,12 @@ class Params:
     # ---------- سویینگ ----------
     lookback: int = 2
     # ---------- SH ----------
-    min_sweep_pips: float = 0.5
-    max_sweep_pips: float = 10.0
+    min_sweep_pips: float = 2.0
+    max_sweep_pips: float = 50.0
     # ---------- BMS ----------
     structure_lookback: int = 10
     max_bms_delay_candles: int = 15
-    displacement_factor: float = 1.0
+    displacement_factor: float = 1.3
     min_body_ratio: float = 0.60
     # ---------- نواحی (OB / FVG) ----------
     ob_zone_mode: str = "full_candle"  # full_candle (پیش‌فرض v2.2) | body
@@ -62,7 +62,7 @@ class Params:
     sl_buffer_pips: float = 2.0
     invalidation_buffer_pips: float = 1.0
     rr_target: float = 2.0
-    max_risk_pips: float = 80.0  # XAU fix: was 25 (2.5$) too small, gold risk often 5-8$ => 50-80 pip
+    max_risk_pips: float = 90.0  # XAU fix: was 25 (2.5$) too small, gold risk often 5-8$ => 50-80 pip
     min_risk_pips: float = 8.0
     # ---------- فیلترها ----------
     max_spread_pips: float = 4.0  # XAU spread often 2-3 pip
@@ -105,7 +105,7 @@ class Params:
             p.max_atr_pips = max(p.max_atr_pips, 100.0)
             p.min_atr_pips = max(p.min_atr_pips, 5.0)
         return p
-
+    
     def validate(self) -> None:
         if self.rto_mode not in ("strict", "relaxed"):
             raise ValueError("rto_mode must be 'strict' or 'relaxed'")
@@ -120,3 +120,91 @@ class Params:
         if self.rto_mode == "strict" and self.allow_fib_fallback:
             # در حالت STRICT طبق تصمیم کاربر: بدون جایگزین فیبوناچی
             self.allow_fib_fallback = False
+    
+
+
+
+
+    def get_params_for_symbol(symbol: str) -> Params:
+   
+       s = (symbol or "").upper()
+
+       if any(x in s for x in ("XAU", "GOLD", "XAG", "SILVER", "XPD", "XPT")):
+        return Params(
+            timeframe="M15",
+            min_sweep_pips=2.0,
+            max_sweep_pips=50.0,
+            displacement_factor=1.3,
+            max_risk_pips=100.0,
+            min_risk_pips=8.0,
+            sl_buffer_pips=2.0,
+            invalidation_buffer_pips=1.5,
+            max_ob_size_pips=50.0,
+            max_ob_distance_pips=150.0,
+            min_fvg_size_pips=2.0,
+            max_fvg_size_pips=30.0,
+            min_atr_pips=5.0,
+            max_atr_pips=100.0,
+            max_spread_pips=4.0,
+            equal_level_tolerance_pips=1.5,
+        )
+    
+
+       if any(x in s for x in ("NAS", "US30", "US500", "SPX", "GER", "DE40", "UK100", "JP225", "NIKKEI")):
+         return Params(
+            timeframe="M15",
+            min_sweep_pips=1.0,
+            max_sweep_pips=30.0,
+            displacement_factor=1.2,
+            max_risk_pips=60.0,
+            min_risk_pips=5.0,
+            sl_buffer_pips=1.5,
+            invalidation_buffer_pips=1.0,
+            max_ob_size_pips=30.0,
+            max_ob_distance_pips=100.0,
+            min_fvg_size_pips=1.5,
+            max_fvg_size_pips=20.0,
+            min_atr_pips=3.0,
+            max_atr_pips=80.0,
+            max_spread_pips=3.0,
+            equal_level_tolerance_pips=1.0,
+        )
+
+       if "JPY" in s:
+        return Params(
+            timeframe="M15",
+            min_sweep_pips=0.5,
+            max_sweep_pips=15.0,
+            displacement_factor=1.0,
+            max_risk_pips=30.0,
+            min_risk_pips=3.0,
+            sl_buffer_pips=1.0,
+            invalidation_buffer_pips=0.8,
+            max_ob_size_pips=20.0,
+            max_ob_distance_pips=70.0,
+            min_fvg_size_pips=1.0,
+            max_fvg_size_pips=15.0,
+            min_atr_pips=2.0,
+            max_atr_pips=30.0,
+            max_spread_pips=2.5,
+            equal_level_tolerance_pips=0.8,
+        )
+
+       return Params(
+        timeframe="M15",
+        min_sweep_pips=0.5,
+        max_sweep_pips=10.0,
+        displacement_factor=1.0,
+        max_risk_pips=25.0,
+        min_risk_pips=3.0,
+        sl_buffer_pips=1.0,
+        invalidation_buffer_pips=0.5,
+        max_ob_size_pips=15.0,
+        max_ob_distance_pips=60.0,
+        min_fvg_size_pips=1.0,
+        max_fvg_size_pips=12.0,
+        min_atr_pips=2.0,
+        max_atr_pips=25.0,
+        max_spread_pips=2.0,
+        equal_level_tolerance_pips=0.5,
+        )    

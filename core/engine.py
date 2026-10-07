@@ -1,8 +1,4 @@
-﻿"""State Machine ط§طµظ„غŒ: SH â†’ BMS â†’ RTO â†’ Trigger (ط¨ط®ط´ غ²طŒ غ³طŒ غ´طŒ غµطŒ غ· ط³ظ†ط¯).
-
-ط§غŒظ† ظ…ط§عکظˆظ„ ظپظ‚ط· آ«طھطµظ…غŒظ…آ» ظ…غŒâ€Œع¯غŒط±ط¯ط› ظ‡غŒع† ط¯ط³طھط±ط³غŒ ط¨ظ‡ ط¨ط±ظˆع©ط± غŒط§ ط³ظپط§ط±ط´ ظ†ط¯ط§ط±ط¯.
-"""
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -17,6 +13,7 @@ IDLE = "IDLE"
 SH_CONFIRMED = "SH_CONFIRMED"
 BMS_CONFIRMED = "BMS_CONFIRMED"
 IN_ZONE_WAIT = "IN_ZONE_WAIT"
+TURTLE_SOUP_CONFIRMED = "TURTLE_SOUP_CONFIRMED"  # ✅ FIX: ستاپ مستقل ترتل سوپ
 
 NOTES = {
     "insufficient_data": "Not enough closed candles to evaluate the setup.",
@@ -28,7 +25,7 @@ NOTES = {
     "invalidated": "Setup invalidated by a candle closing beyond the sweep level.",
     "expired": "Setup expired before the entry trigger.",
     "risk_too_small": "Risk is below the minimum pip threshold (spread/noise).",
-    "risk_too_large": "Risk exceeds the 25 pip maximum for scalping.",
+    "risk_too_large": "Risk exceeds the maximum pip limit for scalping.",
     "htf_filter": "Signal direction is against the H1 trend filter.",
     "low_confidence": "Confidence score below the tradeable threshold.",
     "atr_out_of_range": "ATR outside the allowed volatility window.",
@@ -39,8 +36,9 @@ NOTES = {
     "daily_loss_limit": "Daily loss limit reached.",
     "conflicting_signals": "Valid BUY and SELL setups on the same candle.",
     "blocked": "Trading blocked by the execution layer.",
-    "waiting": "Setup in progress â€” waiting for the next stage.",
+    "waiting": "Setup in progress — waiting for the next stage.",
     "open_position": "An open position already exists for this symbol.",
+    "turtle_soup_triggered": "Turtle Soup reversal confirmed after liquidity sweep.",
 }
 
 # دلایلی که یک ستاپِ شروع‌شده را «ریخته‌اند» (برای آمار بک‌تست)
@@ -53,7 +51,7 @@ DROP_REASONS = {
 
 @dataclass
 class Context:
-    """ط§ط·ظ„ط§ط¹ط§طھ ظ„ط­ط¸ظ‡â€Œط§غŒ ع©ظ‡ ظ…ط¯ظ„/ع©ط§ط±ط¨ط± ظپط±ط§ظ‡ظ… ظ…غŒâ€Œع©ظ†ط¯ (ظپغŒظ„طھط±ظ‡ط§ ظˆ ط§ظ…طھغŒط§ط²ط¯ظ‡غŒ)."""
+    """اطلاعات لحظه‌ای که مدل/کاربر فراهم می‌کند (فیلترها و امتیازدهی)."""
     time: Optional[str] = None
     spread_pips: float = 0.0
     htf_bias: str = "NEUTRAL"          # BULLISH | BEARISH | NEUTRAL
@@ -83,11 +81,11 @@ class Engine:
         self.stage = IDLE
         self.direction: Optional[str] = None      # "bull" | "bear"
         self.sh_index: Optional[int] = None
-        self.sweep_level: Optional[float] = None  # L غŒط§ H ط³ظˆغŒغŒظ†ع¯
-        self.sweep_price: Optional[float] = None  # ع©ظپ/ط³ظ‚ظپ ط´ع©ط§ط±ط´ط¯ظ‡
+        self.sweep_level: Optional[float] = None  # L یا H سویینگ مرجع
+        self.sweep_price: Optional[float] = None  # کف/سقف شکارشده
         self.sweep_depth_pips: float = 0.0
         self.pool: str = "swing"
-        self.ref_level: Optional[float] = None    # ط³ط·ط­ ظ…ط±ط¬ط¹ ط¨ط±ط§غŒ BMS
+        self.ref_level: Optional[float] = None    # سطح مرجع برای BMS
         self.bms_index: Optional[int] = None
         self.bms_level: Optional[float] = None
         self.bms_body: float = 0.0
@@ -96,6 +94,10 @@ class Engine:
         self.leg_high: Optional[float] = None
         self.zone: Optional[Zone] = None
         self.used_sweep_index: int = -1
+        # ✅ FIX: فیلدهای جدید برای ترتل سوپ مستقل
+        self.ts_direction: Optional[str] = None
+        self.ts_sweep_price: Optional[float] = None
+        self.ts_index: Optional[int] = None
 
     # ------------------------------------------------------------------
     def step(self, data: MarketData, i: int, ctx: Optional[Context] = None) -> dict:
@@ -110,12 +112,12 @@ class Engine:
         if ctx.time is None:
             ctx = _with_time(ctx, c.time)
 
-        # ---------- غ°) ظپغŒظ„طھط±ظ‡ط§غŒ ط¨غŒط±ظˆظ†غŒ ----------
+        # ---------- ۰) فیلترهای بیرونی ----------
         blocked = outer_filters(ctx, p)
         if blocked:
             return self._wait(blocked, i, ctx)
 
-        # ---------- غ±) SH ----------
+        # ---------- ۱) SH ----------
         if self.stage == IDLE:
             found = self._find_sh(data, i, ctx)
             if found == "conflicting":
@@ -123,13 +125,20 @@ class Engine:
             if found is None:
                 return self._wait("no_sh_detected", i, ctx)
 
-        # ---------- غ²) BMS ----------
+        # ✅ FIX: ---------- ۱.۵) بررسی ترتل سوپ مستقل ----------
+        if self.stage == SH_CONFIRMED:
+            ts_result = self._try_turtle_soup(data, i, ctx)
+            if ts_result == "__trigger__":
+                return self._build_turtle_soup_signal(data, i, ctx)
+            # اگر ترتل سوپ رد شد، ادامه به BMS
+
+        # ---------- ۲) BMS ----------
         if self.stage == SH_CONFIRMED:
             self._try_bms(data, i)
-            if self.stage == IDLE:                    # ظ…ظ†ظ‚ط¶غŒ ط´ط¯
+            if self.stage == IDLE:                    # منقضی شد
                 return self._wait("no_bms_within_max_delay", i, ctx)
 
-        # ---------- غ³) RTO + غ´) TRIGGER ----------
+        # ---------- ۳) RTO + ۴) TRIGGER ----------
         if self.stage in (BMS_CONFIRMED, IN_ZONE_WAIT):
             reason = self._advance_rto(data, i, ctx)
             if reason == "__trigger__":
@@ -140,7 +149,7 @@ class Engine:
         return self._wait("waiting", i, ctx)
 
     # ==================================================================
-    # ظ…ط±ط­ظ„ظ‡ غ± â€” Stop Hunt
+    # مرحله ۱ — Stop Hunt
     # ==================================================================
     def _find_sh(self, data: MarketData, i: int, ctx: Context) -> Optional[str]:
         p = self.params
@@ -148,6 +157,9 @@ class Engine:
         candles = data.candles
         bull = None
         bear = None
+
+        # ✅ FIX: تحمل نفوذ کلوز برای تشخیص بهتر ترتل سوپ
+        sh_close_tolerance = getattr(p, 'sh_close_tolerance_pips', 3.0) * pip
 
         L = data.last_low(i)
         if L is not None:
@@ -163,7 +175,8 @@ class Engine:
                     continue
                 if depth > p.max_sweep_pips * pip:
                     continue
-                if c.close <= L[2]:
+                # ✅ FIX: قبلی: if c.close <= L[2]: continue
+                if c.close < L[2] - sh_close_tolerance:
                     continue
                 hint = ctx.sweep_pool_hint
                 if hint is None and data.other_equal_levels(
@@ -195,7 +208,8 @@ class Engine:
                     continue
                 if depth > p.max_sweep_pips * pip:
                     continue
-                if c.close >= H[2]:
+                # ✅ FIX: قبلی: if c.close >= H[2]: continue
+                if c.close > H[2] + sh_close_tolerance:
                     continue
                 hint = ctx.sweep_pool_hint
                 if hint is None and data.other_equal_levels(
@@ -218,8 +232,9 @@ class Engine:
         pick = bull or bear
         if pick is None:
             return None
+        
+        # ✅ FIX: اگر ref وجود نداشت، برای بررسی‌های بعدی نگه می‌داریم ولی به مرحله بعد نمی‌رویم
         if pick["ref"] is None:
-            # ط³ط·ط­ ظ…ط±ط¬ط¹ ط¨ط±ط§غŒ BMS ظ…ظˆط¬ظˆط¯ ظ†غŒط³طھ
             self.used_sweep_index = max(self.used_sweep_index, pick["index"])
             return None
 
@@ -237,9 +252,169 @@ class Engine:
         else:
             self.leg_high = self.sweep_price
         return "ok"
+    # ==================================================================
+    # ✅ FIX: مرحله ۱.۵ — بررسی ترتل سوپ مستقل (بدون نیاز به BMS)
+    # ==================================================================
+    def _try_turtle_soup(self, data: MarketData, i: int, ctx: Context) -> Optional[str]:
+        """
+        اگر SH شناسایی شد و کندل بعد از آن یک کندل ریجکشن قوی در جهت مخالف باشد،
+        بدون نیاز به BMS، سیگنال ترتل سوپ صادر می‌شود.
+        
+        شرایط:
+        - برای Bull TS: کندل فعلی باید صعودی باشد و بالای سطح بسته شود
+        - برای Bear TS: کندل فعلی باید نزولی باشد و زیر سطح بسته شود
+        - حداقل ۱ کندل از SH گذشته باشد
+        """
+        p = self.params
+        pip = self.pip
+        c = data.candles[i]
+        
+        # حداقل ۱ کندل از SH گذشته باشد
+        if i <= self.sh_index:
+            return None
+        
+        # حداکثر ۵ کندل فرصت برای تایید ترتل سوپ
+        if i - self.sh_index > 5:
+            return None
+        
+        # ✅ شرط تایید: کندل فعلی باید در جهت معکوس حرکت کند
+        if self.direction == "bull":
+            # برای TS Long: کندل باید صعودی باشد و کلوز بالای سطح SH
+            if c.bullish and c.close > self.sweep_level:
+                self.ts_direction = "bull"
+                self.ts_sweep_price = self.sweep_price
+                self.ts_index = self.sh_index
+                return "__trigger__"
+        elif self.direction == "bear":
+            # برای TS Short: کندل باید نزولی باشد و کلوز زیر سطح SH
+            if c.bearish and c.close < self.sweep_level:
+                self.ts_direction = "bear"
+                self.ts_sweep_price = self.sweep_price
+                self.ts_index = self.sh_index
+                return "__trigger__"
+        
+        return None
 
     # ==================================================================
-    # ظ…ط±ط­ظ„ظ‡ غ² â€” BMS
+    # ✅ FIX: ساخت سیگنال ترتل سوپ مستقل
+    # ==================================================================
+    def _build_turtle_soup_signal(self, data: MarketData, i: int, ctx: Context) -> dict:
+        p = self.params
+        pip = self.pip
+        c = data.candles[i]
+        atr = data.atr(i)
+        atr_pips = atr / pip
+
+        if atr_pips < p.min_atr_pips or atr_pips > p.max_atr_pips:
+            self.reset()
+            return self._wait("atr_out_of_range", i, ctx)
+
+        buffer_pips = max(p.sl_buffer_pips, (ctx.spread_pips or 0.0) * 1.5, 0.3 * atr_pips)
+        entry = c.close
+        
+        if self.ts_direction == "bull":
+            sl = self.ts_sweep_price - buffer_pips * pip
+            risk = entry - sl
+            tp = entry + p.rr_target * risk
+            signal = "BUY"
+        else:
+            sl = self.ts_sweep_price + buffer_pips * pip
+            risk = sl - entry
+            tp = entry - p.rr_target * risk
+            signal = "SELL"
+
+        risk_pips = risk / pip
+        reward_pips = abs(tp - entry) / pip
+
+        if risk_pips < p.min_risk_pips:
+            self.reset()
+            return self._wait("risk_too_small", i, ctx)
+        if risk_pips > p.max_risk_pips:
+            self.reset()
+            return self._wait("risk_too_large", i, ctx)
+        if not htf_allows(self.ts_direction, ctx, p):
+            self.reset()
+            return self._wait("htf_filter", i, ctx)
+
+        session_name, session_mode = session_of(c.time)
+        
+        # ✅ برای ترتل سوپ، confidence متوسط در نظر می‌گیریم
+        score = 60
+        label = "Medium"
+        if session_name in ("London", "Overlap", "NY_AM"):
+            score = 70
+        det = {"setup": "turtle_soup", "session": session_name}
+        
+        if label == "Low":
+            self.reset()
+            return self._wait("low_confidence", i, ctx)
+
+        lot = None
+        if ctx.balance and ctx.risk_percent and ctx.pip_value_per_lot and risk_pips > 0:
+            lot = (ctx.balance * ctx.risk_percent / 100.0) / (risk_pips * ctx.pip_value_per_lot)
+            lot = round(lot, 2)
+
+        out = {
+            "schema_version": "2.1",
+            "timestamp": c.time,
+            "symbol": self.symbol,
+            "timeframe": p.timeframe,
+            "signal": signal,
+            "confidence": label,
+            "confidence_score": score,
+            "setup": {
+                "sh_detected": True,
+                "bms_detected": False,  # ✅ ترتل سوپ نیاز به BMS ندارد
+                "rto_detected": False,
+                "entry_trigger": True,
+                "entry_type": "TurtleSoup",
+            },
+            "setup_trace": {
+                "sh_sweep_level": r(self.sweep_level, self.digits),
+                "sweep_price": r(self.ts_sweep_price, self.digits),
+                "sweep_depth_pips": r(self.sweep_depth_pips, 1),
+                "sweep_pool": self.pool,
+                "setup_age_candles": i - self.ts_index,
+            },
+            "trade": {
+                "entry_price": r(entry, self.digits),
+                "stop_loss": r(sl, self.digits),
+                "take_profit": r(tp, self.digits),
+                "risk_reward": round(p.rr_target, 2),
+                "risk_pips": r(risk_pips, 1),
+                "reward_pips": r(reward_pips, 1),
+                "lot_size": lot,
+            },
+            "invalidation": {
+                "cancel_if_close_below": r(self.ts_sweep_price - p.invalidation_buffer_pips * pip, self.digits)
+                if self.ts_direction == "bull" else None,
+                "cancel_if_close_above": r(self.ts_sweep_price + p.invalidation_buffer_pips * pip, self.digits)
+                if self.ts_direction == "bear" else None,
+                "expiry_candles": 5,
+            },
+            "filters": {
+                "htf_bias": ctx.htf_bias,
+                "htf_alignment": True,
+                "session": session_name,
+                "news_block": False,
+                "risk_pips_ok": True,
+                "spread_pips": ctx.spread_pips,
+                "atr_pips": r(atr_pips, 1),
+                "sl_buffer_pips": r(buffer_pips, 2),
+            },
+            "notes": f"Turtle Soup {'Long' if self.ts_direction == 'bull' else 'Short'}: "
+                     f"Liquidity swept {r(self.sweep_depth_pips, 1)} pips, rejection confirmed.",
+            "_internal": {
+                "stage": "TRIGGERED",
+                "score_breakdown": det,
+                "direction": self.ts_direction,
+            },
+        }
+        self.reset()
+        return out
+
+    # ==================================================================
+    # مرحله ۲ — BMS
     # ==================================================================
     def _try_bms(self, data: MarketData, i: int) -> None:
         p = self.params
@@ -249,11 +424,17 @@ class Engine:
         ok_ratio = c.rng > 0 and (c.body / c.rng) >= p.min_body_ratio
         displacement = ok_body or ok_ratio
 
+        # ✅ FIX: اگر ref_level وجود ندارد، نمی‌توان BMS زد
+        if self.ref_level is None:
+            if i - self.sh_index > p.max_bms_delay_candles:
+                self.reset()
+            return
+
         broke = False
-        if self.direction == "bull" and c.close > (self.ref_level or 0):
+        if self.direction == "bull" and c.close > self.ref_level:
             broke = True
             level = self.ref_level
-        elif self.direction == "bear" and c.close < (self.ref_level or 1e18):
+        elif self.direction == "bear" and c.close < self.ref_level:
             broke = True
             level = self.ref_level
 
@@ -266,7 +447,7 @@ class Engine:
             self.bms_level = level
             self.bms_body = c.body
             self.bms_ratio = (c.body / atr) if atr > 0 else 0.0
-            # leg ظ†ظ‡ط§غŒغŒ (ط¨ط®ط´ غ±.غ´)
+            # leg نهایی (بخش ۱.۴)
             seg = data.candles[self.sh_index : i + 1]
             if self.direction == "bull":
                 self.leg_high = max(x.high for x in seg)
@@ -280,14 +461,14 @@ class Engine:
             self.reset()
 
     # ==================================================================
-    # ظ…ط±ط­ظ„ظ‡ غ³ ظˆ غ´ â€” RTO + Trigger
+    # مرحله ۳ و ۴ — RTO + Trigger
     # ==================================================================
     def _advance_rto(self, data: MarketData, i: int, ctx: Context) -> Optional[str]:
         p = self.params
         pip = self.pip
         c = data.candles[i]
 
-        # ط¨ط§ط·ظ„â€Œط´ط¯ظ†
+        # باطل‌شدن
         buf = p.invalidation_buffer_pips * pip
         if self.direction == "bull" and c.close < self.sweep_price - buf:
             self.reset()
@@ -297,7 +478,7 @@ class Engine:
             return "invalidated"
 
         if self.stage == BMS_CONFIRMED:
-            # leg ط±ط§ طھط§ ظ‚ط¨ظ„ ط§ط² ظ„ظ…ط³ ط§ظˆظ„ ظ†ط§ط­غŒظ‡ ط²ظ†ط¯ظ‡ ظ†ع¯ظ‡ ظ…غŒâ€Œط¯ط§ط±غŒظ…
+            # leg را تا قبل از لمس اول ناحیه زنده نگه می‌داریم
             if self.direction == "bull":
                 self.leg_high = max(self.leg_high, c.high)
             else:
@@ -312,9 +493,8 @@ class Engine:
                 return "no_valid_zone"
             self.zone = zone
 
-            # v2.2: ویک باید خودِ هم‌پوشانی دقیق با پنجره‌ی فیبو را لمس کند؛
+            # v2.2: باید خودِ هم‌پوشانی دقیق با پنجره‌ی فیبو را لمس کند؛
             # لمس لبه‌ی دور OB بدون رسیدن به هم‌پوشانی کافی نیست.
-            # entry_zone همان خودِ OB/FVG می‌ماند و تریگر کلوز داخل آن است.
             t_lo = zone.overlap_lo if zone.overlap_lo is not None else zone.lo
             t_hi = zone.overlap_hi if zone.overlap_hi is not None else zone.hi
             if c.low <= t_hi and c.high >= t_lo:
@@ -328,7 +508,7 @@ class Engine:
             if self.direction == "bear" and c.bearish and inside:
                 return "__trigger__"
 
-        # ط§ظ†ظ‚ط¶ط§
+        # انقضا
         if i - self.bms_index > p.max_wait_candles:
             self.reset()
             return "zone_not_reached"
@@ -338,7 +518,7 @@ class Engine:
         return None
 
     # ==================================================================
-    # ط³ط§ط®طھ ط³غŒع¯ظ†ط§ظ„ (ط¨ط®ط´ غ´ ظˆ غµ ظˆ غ·)
+    # ساخت سیگنال (بخش ۴ و ۵ و ۷)
     # ==================================================================
     def _build_signal(self, data: MarketData, i: int, ctx: Context) -> dict:
         p = self.params
