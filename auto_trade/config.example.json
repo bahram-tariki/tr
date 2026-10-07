@@ -1,0 +1,24 @@
+{
+  "symbols": ["EURUSD"],
+  "mode": "paper",
+  "balance": 100000,
+  "risk_percent": 0.5,
+  "pip_value_per_lot": 10.0,
+  "spread_pips": "auto",
+  "htf_bias": {
+    "EURUSD": "AUTO"
+  },
+  "htf_timeframe": "H1",
+  "htf4_bias": "NEUTRAL",
+  "minutes_to_red_news": null,
+  "data": {
+    "EURUSD": "mt5:EURUSD:M5:1000"
+  },
+  "mt5_bars": 1000,
+  "max_daily_losses": 3,
+  "max_total_losses": 6,
+  "max_signals_per_session": 3,
+  "poll_seconds": 60,
+  "state_dir": "auto_trade/state",
+  "params": {}
+}
